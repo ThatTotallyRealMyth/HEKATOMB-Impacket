@@ -19,7 +19,6 @@
 #	kalu (@kalu_69)
 
 import os, sys, argparse, random, string, time
-# from ldap3 import Connection, Server, NTLM, ALL
 from impacket.examples.utils import parse_target
 from impacket.smbconnection import SMBConnection
 from impacket.smb3structs import SMB2_DIALECT_002
@@ -77,7 +76,6 @@ def main():
 
 	options                             = parser.parse_args()
 	domain, username, password, address = parse_target(options.target)
-	passLdap 							= password
 	
 
 	if domain is None:
@@ -95,13 +93,11 @@ def main():
 	if password == '' and username != '' and options.hashes is None :
 		from getpass import getpass
 		password = getpass("[+] Password:")
-		passLdap = password
+
 	if options.hashes is not None:
 		lmhash, nthash = options.hashes.split(':')
 		if '' == lmhash:
 			lmhash = 'aad3b435b51404eeaad3b435b51404ee'
-		passLdap       = f"{lmhash}:{nthash}"
-
 	else:
 		lmhash = ''
 		nthash = ''
@@ -142,7 +138,7 @@ def main():
 		sys.exit(1)
 
 	# try to connect to ldap
-	ldapConnection,baseDN = Connect_AD_ldap(address, domain, username, passLdap, debug, debugmax)
+	ldapConnection,baseDN = Connect_AD_ldap(address, domain, username, password, lmhash, nthash, debug, debugmax)
 
 	# catch all users in domain or just the specified one
 	users_list = Get_AD_users(ldapConnection, baseDN, options.just_user, debug, debugmax)

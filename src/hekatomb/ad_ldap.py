@@ -5,10 +5,11 @@
 # AD LDAP Fonctions
 
 import sys
-from ldap3 import Connection, Server, NTLM, ALL
 from threading import *
 import socket
 import dns.resolver
+from impacket.ldap import ldap, ldapasn1
+import struct
 
 global online_computers
 online_computers = []
@@ -51,13 +52,13 @@ def scan(computer, domain, dns_server, port, debug, debugmax):
 				screenLock.release()
 		answer = str(answer[0])
 
-        # Set IP and Port to connect
+	
 		s.connect((answer, port))
-        
-		# Closing the socket
+		
+	
 		s.close()
 
-        # Call the summary fonction to add the computer to the online_computers list
+		
 		summary(computer)
 		
 	except Exception as e:
@@ -65,172 +66,174 @@ def scan(computer, domain, dns_server, port, debug, debugmax):
 			screenLock.acquire()
 			print("[!] ERROR : " +str(e))
 			screenLock.release()
-    # Free the semaphore object and close the socket
+	
 	finally:
 		screenLock.release()
 		s.close()
 		return
 
 
-# Création d'une boucle pour créer un thread par machine
+
 def SmbScan(computers_list, domain, dns_server, port, debug, debugmax):
-	# Définition du tableau de threads
+	
 	threads = []
 
-	# Pour chaque port entre min et max
+
 	for computer in computers_list:
 
-		# Création d'un thread faisant appel à la fonciton scan avec l'ip et le port en arguments
+		
 		t = Thread(target=scan, args=(computer, domain, dns_server, port, debug, debugmax))
 
-		# Lancement de l'exécution du thread
+	
 		t.start()
 
-		# Ajout du thread au tableau des threads
+		
 		threads.append(t)
-    
-	# On attend que tous les threads se terminent puis on quitte la boucle
+	
+	
 	[t.join() for t in threads]
 	return
 
 
 
-# Fonction d'ajout des ordinateurs en ligne dans un tableau
+
 def summary(computer):
 	online_computers.append(computer)
 	return
 
 def Get_online_computers():
 	return online_computers
+
+
+def _format_sid(sid_bytes):
+	if not sid_bytes:
+		return ""
+	revision = sid_bytes[0]
+	sub_authority_count = sid_bytes[1]
+	identifier_authority = int.from_bytes(sid_bytes[2:8], byteorder='big')
+	sub_authorities = struct.unpack('<' + 'I' * sub_authority_count, sid_bytes[8:8 + (sub_authority_count * 4)])
+	return f"S-{revision}-{identifier_authority}-" + "-".join([str(sub) for sub in sub_authorities])
+
+def _impacket_search(ldapConnection, baseDN, searchFilter, attributes):
+	try:
+		resp = ldapConnection.search(searchBase=baseDN, searchFilter=searchFilter, attributes=attributes, sizeLimit=0)
+	except ldap.LDAPSearchError as e:
+		resp = e.getAnswers()
 	
+	results = []
+	for item in resp:
+		if isinstance(item, ldapasn1.SearchResultEntry):
+			result_dict = {}
+			for attribute in item['attributes']:
+				attr_type = str(attribute['type'])
+				attr_val = attribute['vals'][0]
+				result_dict[attr_type] = attr_val
+			results.append(result_dict)
+	return results
 
-def Connect_AD_ldap(address, domain, username, passLdap, debug, debugmax):
-    # try to connect to ldap
 
+def Connect_AD_ldap(address, domain, username, password, lmhash, nthash, debug, debugmax):
 	if debug is True or debugmax is True:
 		print("[+] Testing LDAP connection...")
 
 	connectionFailed = False
-	serv 			 = Server(address, get_info=ALL, use_ssl=True, connect_timeout=15)
-	ldapConnection   = Connection(serv, user=f"{domain}\\{username}", password=passLdap, authentication=NTLM)
 
 	try:
-		if not ldapConnection.bind():
-			print("[!] Error : Could not connect to ldap : bad credentials")
-			sys.exit(1)
+		ldapConnection = ldap.LDAPConnection(f'ldaps://{address}', '', address)
+		ldapConnection.login(username, password, domain, lmhash, nthash)
 		if debug is True or debugmax is True:
 			print("[+] LDAP connection successfull with SSL encryption.")
-	except:
+	except Exception as e:
 		if debug is True or debugmax is True:
 			print("[!] Error : Could not connect to ldap with SSL encryption. Trying without SSL encryption...")
 		connectionFailed = True
 
 	if connectionFailed:
 		try:
-			serv = Server(address, get_info=ALL, connect_timeout=15)
-			ldapConnection = Connection(serv, user=f"{domain}\\{username}", password=passLdap, authentication=NTLM)
-			if not ldapConnection.bind():
-				print("[!] Error : Could not connect to ldap : bad credentials")
-				sys.exit(1)
+			ldapConnection = ldap.LDAPConnection(f'ldap://{address}', '', address)
+			ldapConnection.login(username, password, domain, lmhash, nthash)
 			print("[+] LDAP connection succeeded !")
-		except:
+		except Exception as e2:
 			print("[!] Error : Could not connect to ldap.")
 			if debug is True or debugmax is True:
 				import traceback
 				traceback.print_exc()
 			sys.exit(1)
-	
-	# Create the baseDN
-	baseDN = serv.info.other['defaultNamingContext'][0]
-	return ldapConnection,baseDN
+
+	# Dynamically extract baseDN from RootDSE
+	try:
+		resp = _impacket_search(ldapConnection, '', '(objectClass=*)', ['defaultNamingContext'])
+		if resp and 'defaultNamingContext' in resp[0]:
+			base_val = resp[0]['defaultNamingContext']
+			baseDN = base_val.decode('utf-8') if isinstance(base_val, bytes) else str(base_val)
+		else:
+			baseDN = ','.join(['DC=' + x for x in domain.split('.')])
+	except Exception:
+		baseDN = ','.join(['DC=' + x for x in domain.split('.')])
+
+	return ldapConnection, baseDN
+
 
 def Get_AD_users(ldapConnection, baseDN, just_user, debug, debugmax):
-	# catch all users in domain or just the specified one
-	if just_user is not None :
-		searchFilter = "(&(objectCategory=person)(objectClass=user)(sAMAccountName="+str(just_user)+"))"
+	if just_user is not None:
+		searchFilter = f"(&(objectCategory=person)(objectClass=user)(sAMAccountName={just_user}))"
 		print("[+] Target user will be only " + str(just_user))
 	else:
 		searchFilter = "(&(objectCategory=person)(objectClass=user))"
+	
+	print("[+] Retrieving user objects in LDAP directory...")
+	ldap_users = []
 	try:
-		print("[+] Retrieving user objects in LDAP directory...")
-		ldap_users = []
-		ldapConnection.search('%s' % (baseDN), searchFilter, attributes=['sAMAccountName', 'objectSID'],paged_size=1000)
-		for i in range(len(ldapConnection.entries)):
-			ldap_users.append(ldapConnection.entries[i])
-		cookie = ldapConnection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
-		while cookie:
-			ldapConnection.search('%s' % (baseDN), searchFilter, attributes=['sAMAccountName', 'objectSID'],paged_size=1000,paged_cookie=cookie)
-			cookie = ldapConnection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
-			for i in range(len(ldapConnection.entries)):
-				ldap_users.append(ldapConnection.entries[i])
-		
+		results = _impacket_search(ldapConnection, baseDN, searchFilter, ['sAMAccountName', 'objectSid'])
 		if debug is True or debugmax is True:
 			print("[+] Converting ObjectSID in string SID...")
-		
-		ad_users = []
-		for user in ldap_users:
-			try:
-				ldap_username = str(user['sAMAccountName'])
-				sid           = str(user['objectSID'])
-				name_and_sid  = [ldap_username.strip(), sid]
-				ad_users.append(name_and_sid)
-			except:
-				pass 
-				# some users may not have samAccountName
+			
+		for res in results:
+			if 'sAMAccountName' in res and 'objectSid' in res:
+				uname_raw = res['sAMAccountName']
+				uname = uname_raw.decode('utf-8') if isinstance(uname_raw, bytes) else str(uname_raw)
+				sid = _format_sid(res['objectSid'])
+				ldap_users.append([uname.strip(), sid])
+				
 		if debug is True or debugmax is True:
-			print("[+] Found about " + str( len(ldap_users) ) + " users in LDAP directory.")
-	except:
+			print("[+] Found about " + str(len(ldap_users)) + " users in LDAP directory.")
+	except Exception as e:
 		print("[!] Error : Could not extract users from ldap.")
 		if debug is True or debugmax is True:
 			import traceback
 			traceback.print_exc()
 		sys.exit(1)
-	if len(ad_users) == 0:
+
+	if len(ldap_users) == 0:
 		print("[!] No user found in LDAP directory")
-		sys.exit(1);
-    
-	return ad_users
+		sys.exit(1)
+	
+	return ldap_users
 
 
 def Get_AD_computers(ldapConnection, baseDN, just_computer, debug, debugmax):
-    # catch all computers (enabled) in domain or just the specified one
 	print("[+] Retrieving computer objects in LDAP directory...")
 	ad_computers = []
-	ldap_computers = []
-	if just_computer is not None :
+	if just_computer is not None:
 		ad_computers.append(just_computer)
 		print("[+] Target computer will be only " + str(just_computer))
 	else:
 		try:
-			# Filter on enabled computer only
 			searchFilter = "(&(objectCategory=computer)(objectClass=computer)(!(useraccountcontrol:1.2.840.113556.1.4.803:=2)))"
-			search_base = baseDN
-			ldapConnection.search(search_base, searchFilter, attributes=['cn'],paged_size=1000)
-
-			for i in range(len(ldapConnection.entries)):
-				ldap_computers.append(ldapConnection.entries[i])
-				if debugmax is True:
-					print("[+] ldapConnection.entries["+str(i)+"] : " + str(ldapConnection.entries[i]).strip())
-
-			cookie = ldapConnection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
-			while cookie:
-				ldapConnection.search('%s' % (baseDN), searchFilter, attributes=['cn'],paged_size=1000,paged_cookie=cookie)
-				cookie = ldapConnection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
-				for i in range(len(ldapConnection.entries)):
-					ldap_computers.append(ldapConnection.entries[i])
-
-			for computer in ldap_computers:
-				try:
-					comp_name = str(computer['cn'])
+			results = _impacket_search(ldapConnection, baseDN, searchFilter, ['name', 'cn'])
+			
+			for res in results:
+				name_val = res.get('cn') or res.get('name')
+				if name_val:
+					comp_name = name_val.decode('utf-8') if isinstance(name_val, bytes) else str(name_val)
 					ad_computers.append(comp_name.strip())
-				except:
-					pass
+					
 			if debug is True or debugmax is True:
-				print("[+] Found about " + str( len(ad_computers) ) + " computers in LDAP directory.")
-		except:
+				print("[+] Found about " + str(len(ad_computers)) + " computers in LDAP directory.")
+		except Exception as e:
 			print("[!] Error : Could not extract computers from ldap.")
 			if debug is True or debugmax is True:
 				import traceback
 				traceback.print_exc()
-		
-	return ad_computers
+				
+	return list(set(ad_computers))
