@@ -139,7 +139,7 @@ def Connect_AD_ldap(address, domain, username, password, lmhash, nthash, debug, 
 	connectionFailed = False
 
 	try:
-		ldapConnection = ldap.LDAPConnection(f'ldaps://{address}', '', address)
+		ldapConnection = ldap.LDAPConnection(f'ldap://{address}', '', address)
 		ldapConnection.login(username, password, domain, lmhash, nthash)
 		if debug is True or debugmax is True:
 			print("[+] LDAP connection successfull with SSL encryption.")
