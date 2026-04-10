@@ -132,33 +132,33 @@ def _impacket_search(ldapConnection, baseDN, searchFilter, attributes):
 	return results
 
 
-def Connect_AD_ldap(address, domain, username, password, lmhash, nthash, debug, debugmax):
+def Connect_AD_ldap(address, domain, username, password, lmhash, nthash, doKerberos, dc_ip, debug, debugmax):
 	if debug is True or debugmax is True:
 		print("[+] Testing LDAP connection...")
 
-	connectionFailed = False
+	# Use standard ldap:// over port 389. SASL will negotiate integrity.
+	target_host = domain if domain else address
 
 	try:
-		ldapConnection = ldap.LDAPConnection(f'ldap://{address}', '', address)
-		ldapConnection.login(username, password, domain, lmhash, nthash)
-		if debug is True or debugmax is True:
-			print("[+] LDAP connection successfull with SSL encryption.")
-	except Exception as e:
-		if debug is True or debugmax is True:
-			print("[!] Error : Could not connect to ldap with SSL encryption. Trying without SSL encryption...")
-		connectionFailed = True
-
-	if connectionFailed:
-		try:
-			ldapConnection = ldap.LDAPConnection(f'ldap://{address}', '', address)
-			ldapConnection.login(username, password, domain, lmhash, nthash)
-			print("[+] LDAP connection succeeded !")
-		except Exception as e2:
-			print("[!] Error : Could not connect to ldap.")
+		ldapConnection = ldap.LDAPConnection(f'ldap://{target_host}', '', dc_ip)
+		
+		if doKerberos:
 			if debug is True or debugmax is True:
-				import traceback
-				traceback.print_exc()
-			sys.exit(1)
+				print("[+] Authenticating with Kerberos (SASL)...")
+			ldapConnection.kerberosLogin(username, password, domain, lmhash, nthash, '', kdcHost=dc_ip)
+		else:
+			if debug is True or debugmax is True:
+				print("[+] Authenticating with NTLM (SASL)...")
+			ldapConnection.login(username, password, domain, lmhash, nthash)
+			
+		if debug is True or debugmax is True:
+			print("[+] LDAP connection and SASL authentication succeeded!")
+	except Exception as e:
+		print(f"[!] Error : Could not connect to ldap or authenticate. {str(e)}")
+		if debug is True or debugmax is True:
+			import traceback
+			traceback.print_exc()
+		sys.exit(1)
 
 	# Dynamically extract baseDN from RootDSE
 	try:
